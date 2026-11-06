@@ -18,13 +18,14 @@ $(BUILD)/gpd-hotkeysd: src/gpd-hotkeysd.c include/version.h | $(BUILD)
 $(BUILD):
 	mkdir -p $@
 
-# Unit tests of the pure logic.
+# Unit tests of the pure logic, built with the address and undefined
+# behaviour sanitizers.
 test: $(BUILD)/test_logic
 	$(BUILD)/test_logic
 
 $(BUILD)/test_logic: tests/test_logic.c src/logic.c include/logic.h | $(BUILD)
-	$(CC) $(CPPFLAGS) $(CFLAGS) -g $(LDFLAGS) -o $@ \
-		tests/test_logic.c src/logic.c -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) -g -fsanitize=address,undefined -fno-sanitize-recover=all \
+		$(LDFLAGS) -o $@ tests/test_logic.c src/logic.c -lm
 
 install: all
 	install -Dm755 $(BUILD)/gpd-hotkeysd $(DESTDIR)$(PREFIX)/bin/gpd-hotkeysd
