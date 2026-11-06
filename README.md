@@ -42,6 +42,23 @@ The card is opened by name (`hw:chtrt5645`) on every key press, so it may
 appear after the daemon starts. When the control is missing, `Master` then
 `PCM` are tried.
 
+## State file
+
+After each action the daemon writes the current values to
+`/run/gpd-hotkeysd/state` (`state_file`, empty to disable, an absolute
+path):
+
+```
+brightness=18
+volume=100
+mute=0
+```
+
+Values are percentages (`mute` is 0 or 1), `-1` meaning unknown. The file is
+replaced atomically, is world-readable, and a `<state_file>.tmp` symbolic link
+is never followed. `--test-event` reads the full state first so no value is
+unknown. Nothing is written with `-n`.
+
 A key press is simulated with `--test-event`; `-n` shows the action without
 applying it:
 
@@ -57,7 +74,7 @@ another file with `-c`): `backlight`, `brightness_step` (1 to 50, in %),
 `brightness_min` (raw floor), `card`, `volume_control`, `mute_controls`
 (comma-separated, empty to use the switch of the volume control),
 `volume_step` (dB, or a percentage of the range such as `1%`),
-`volume_max_db`. An unknown key, an invalid value or a line
+`volume_max_db`, `state_file`. An unknown key, an invalid value or a line
 longer than 511 bytes is reported and ignored: the default is kept.
 
 ## Tests

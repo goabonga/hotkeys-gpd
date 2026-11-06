@@ -64,6 +64,24 @@ echo 98 >"$T/bl/brightness"
 "$BIN" -c "$T/conf" -b "$T/bl" -t KEY_BRIGHTNESSUP
 check "ceiling of max_brightness" grep -qx 100 "$T/bl/brightness"
 
+# state file (dry-run writes nothing, a real run writes the full state)
+printf 'state_file = %s/run/state\n' "$T" >"$T/conf-state"
+echo 13 >"$T/bl/brightness"
+"$BIN" -n -c "$T/conf-state" -b "$T/bl" -t KEY_BRIGHTNESSUP 2>/dev/null
+check "dry-run does not write the state" test ! -e "$T/run/state"
+"$BIN" -c "$T/conf-state" -b "$T/bl" -t KEY_BRIGHTNESSUP
+check "state after brightness up" grep -qx brightness=18 "$T/run/state"
+check "state lists volume and mute" grep -q '^volume=-\?[0-9]*$' "$T/run/state"
+# a sound key keeps the brightness in the state
+"$BIN" -c "$T/conf-state" -b "$T/bl" -t KEY_MUTE 2>/dev/null
+check "state keeps brightness after a sound key" grep -qx brightness=18 "$T/run/state"
+# <state>.tmp symlink: never followed
+echo intact >"$T/target"
+ln -s "$T/target" "$T/run/state.tmp"
+"$BIN" -c "$T/conf-state" -b "$T/bl" -t KEY_BRIGHTNESSUP
+check "state.tmp symlink not followed" grep -qx intact "$T/target"
+check "state rewritten despite the link" grep -qx brightness=23 "$T/run/state"
+
 # configuration
 printf 'brightness_step = 10\n' >"$T/conf-step"
 echo 50 >"$T/bl/brightness"
@@ -84,7 +102,7 @@ check_out "rest of a long line ignored" 'brightness 50 -> 55' \
 	"$BIN" -n -c "$T/conf-long" -b "$T/bl" -t KEY_BRIGHTNESSUP
 
 # sound keys: the test card does not exist
-printf 'card = missing-card-test\n' >"$T/conf-nocard"
+printf 'card = missing-card-test\nstate_file = %s/run/state\n' "$T" >"$T/conf-nocard"
 for k in KEY_VOLUMEUP KEY_VOLUMEDOWN KEY_MUTE; do
 	check "dry-run $k without card" "$BIN" -n -c "$T/conf-nocard" -t $k
 	check_out "dry-run $k reports the card" 'card "missing-card-test" unavailable' \

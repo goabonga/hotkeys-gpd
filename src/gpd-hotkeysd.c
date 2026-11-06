@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #define CONF_DEFAULT "/etc/gpd-hotkeysd.conf"
@@ -33,6 +34,12 @@ static bool conf_explicit;
 static bool verbose;
 static bool dry;
 static bool journal;
+/* current values in % (-1: unknown), exposed through the state file */
+static struct {
+	int brightness;
+	int volume;
+	int mute;
+} state = {-1, -1, -1};
 
 /* ---------- logging (stderr, "<N>" prefix understood by journald) ----------
  */
@@ -96,6 +103,39 @@ static int load_conf(struct conf *c)
 	}
 	fclose(f);
 	return 0;
+}
+
+/* ---------- state file ---------- */
+
+static void write_state(void)
+{
+	char tmp[PATH_MAX];
+	char dir[PATH_MAX];
+	char *slash;
+	int fd;
+
+	if (dry || !*conf.state_file)
+		return;
+	snprintf(dir, sizeof(dir), "%s", conf.state_file);
+	slash = strrchr(dir, '/');
+	if (slash)
+		*slash = '\0';
+	if (*dir)
+		mkdir(dir, 0755); /* already there with RuntimeDirectory= */
+	snprintf(tmp, sizeof(tmp), "%s.tmp", conf.state_file);
+	/* O_EXCL|O_NOFOLLOW: a <state>.tmp symlink never redirects the write */
+	unlink(tmp);
+	fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+		  0644);
+	if (fd < 0) {
+		DBG("%s: %s", tmp, strerror(errno));
+		return;
+	}
+	fchmod(fd, 0644); /* readable despite UMask=0077 */
+	dprintf(fd, "brightness=%d\nvolume=%d\nmute=%d\n", state.brightness,
+		state.volume, state.mute);
+	if (close(fd) || rename(tmp, conf.state_file))
+		DBG("%s: %s", conf.state_file, strerror(errno));
 }
 
 /* ---------- backlight ---------- */
@@ -191,7 +231,7 @@ static int find_backlight(char *out, size_t len)
 	return best < 3 ? 0 : -1;
 }
 
-static int brightness(bool up)
+static int brightness(bool up, bool read_only)
 {
 	char dir[PATH_MAX];
 	char p[PATH_MAX + 16];
@@ -206,6 +246,10 @@ static int brightness(bool up)
 	    read_int(dir, "brightness", &cur) || max < 1) {
 		ERR("backlight \"%s\" not found or unreadable", conf.backlight);
 		return -1;
+	}
+	if (read_only) {
+		state.brightness = percent(cur, 0, max);
+		return 0;
 	}
 	v = brightness_next(cur, max, conf.brightness_step, conf.brightness_min,
 			    up);
@@ -228,6 +272,7 @@ static int brightness(bool up)
 			return -1;
 		}
 	}
+	state.brightness = percent(v, 0, max);
 	DBG("brightness %d -> %d / %d", cur, v, max);
 	return 0;
 }
@@ -397,6 +442,7 @@ static int toggle_mute(struct sound *s)
 	}
 	if (mute_write(s, !m))
 		return -1;
+	state.mute = !m;
 	DBG("mute: %s", m ? "unmuted" : "muted");
 	return 0;
 }
@@ -433,16 +479,37 @@ static int change_volume(struct sound *s, bool up)
 		return 0;
 	}
 	/* volume up unmutes first */
-	if (up && m == 1)
-		mute_write(s, false);
+	if (up && m == 1 && !mute_write(s, false))
+		state.mute = 0;
 	r = snd_mixer_selem_set_playback_dB_all(s->vol, v,
 						up && v < ceiling ? 1 : -1);
 	if (r < 0) {
 		ERR("volume: %s", snd_strerror(r));
 		return -1;
 	}
+	state.volume = percent(v, min, ceiling);
 	DBG("volume %.2f -> %.2f dB", (double)cur / 100.0, (double)v / 100.0);
 	return 0;
+}
+
+/* Reads volume and mute without changing anything. */
+static void sound_read_state(void)
+{
+	struct sound s;
+	long min;
+	long max;
+	long cur;
+
+	if (sound_open(&s, true))
+		return;
+	state.mute = mute_read(&s);
+	if (s.vol &&
+	    snd_mixer_selem_get_playback_dB_range(s.vol, &min, &max) >= 0 &&
+	    snd_mixer_selem_get_playback_dB(s.vol, SND_MIXER_SCHN_FRONT_LEFT,
+					    &cur) >= 0)
+		state.volume = percent(
+		    cur, min, max < conf.volume_max ? max : conf.volume_max);
+	sound_close(&s);
 }
 
 static int sound(enum hotkey k)
@@ -466,9 +533,14 @@ static int sound(enum hotkey k)
 
 static int action(enum hotkey k)
 {
+	int r;
+
 	if (k == HK_BRIGHTNESS_UP || k == HK_BRIGHTNESS_DOWN)
-		return brightness(k == HK_BRIGHTNESS_UP);
-	return sound(k);
+		r = brightness(k == HK_BRIGHTNESS_UP, false);
+	else
+		r = sound(k);
+	write_state();
+	return r;
 }
 
 static void usage(FILE *f)
@@ -552,6 +624,11 @@ int main(int argc, char **argv)
 		ERR("unknown key \"%s\"", test);
 		usage(stderr);
 		return 2;
+	}
+	/* full state first: the state file never gets unknown values */
+	if (!dry) {
+		brightness(false, true);
+		sound_read_state();
 	}
 	return action((enum hotkey)k) ? 1 : 0;
 }
