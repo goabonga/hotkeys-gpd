@@ -7,6 +7,7 @@
 #define LOGIC_H
 
 #include <stdbool.h>
+#include <stddef.h>
 
 /* Handled keys (internal index). */
 enum hotkey {
@@ -17,6 +18,48 @@ enum hotkey {
 	HK_MUTE,
 	HK_COUNT
 };
+
+#define CONF_STR 256
+#define MAX_MUTE 4
+
+struct conf {
+	/* "auto" or a plain name under /sys/class/backlight */
+	char backlight[CONF_STR];
+	/* step in % of max_brightness */
+	int brightness_step;
+	/* raw floor (>= 1: never a black screen) */
+	int brightness_min;
+	/* ALSA card name */
+	char card[CONF_STR];
+	/* simple mixer element of the master volume */
+	char volume_control[CONF_STR];
+	/* switches (interface MIXER) toggled by mute */
+	char mute_controls[MAX_MUTE][CONF_STR];
+	int n_mute;
+	/* volume step in 1/100 dB */
+	long volume_step;
+	/* volume step in % of the dB range (0: use volume_step) */
+	int volume_step_pct;
+	/* volume ceiling in 1/100 dB */
+	long volume_max;
+	/* window in which a press repeated by another device is ignored */
+	int dedup_ms;
+	/* minimum interval between two steps while a key is held */
+	int repeat_ms;
+	/* state file ("" disables it) */
+	char state_file[CONF_STR];
+};
+
+void conf_default(struct conf *c);
+
+/*
+ * Applies one "key = value" line ('#' starts a comment). Returns 0, or -1
+ * with a message in err and c untouched.
+ */
+int conf_line(struct conf *c, const char *line, char *err, size_t errlen);
+
+/* Volume step in 1/100 dB over [min, max]: volume_step or its percentage. */
+long volume_step_for(const struct conf *c, long min, long max);
 
 /*
  * New raw brightness after one step of pct % of max, clamped to [min, max].

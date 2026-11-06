@@ -64,6 +64,71 @@ static void test_volume(void)
 	CHECK(volume_next(-6400, 200, -6525, 0, false) == -6525);
 }
 
+static int line(struct conf *c, const char *l)
+{
+	char err[512];
+
+	return conf_line(c, l, err, sizeof(err));
+}
+
+static void test_conf(void)
+{
+	struct conf c;
+	char err[512];
+
+	conf_default(&c);
+	CHECK(c.brightness_step == 5 && c.brightness_min == 1);
+	CHECK(c.volume_step == 200 && c.volume_max == 0);
+	CHECK(strcmp(c.card, "chtrt5645") == 0);
+	CHECK(strcmp(c.volume_control, "DAC1") == 0 && c.n_mute == 2);
+	CHECK(strcmp(c.state_file, "/run/gpd-hotkeysd/state") == 0);
+
+	CHECK(line(&c, "") == 0 && line(&c, "   # comment") == 0);
+	CHECK(line(&c, " brightness_step = 10  # step") == 0);
+	CHECK(c.brightness_step == 10);
+	CHECK(line(&c, "brightness_step=0") < 0 && c.brightness_step == 10);
+	CHECK(line(&c, "brightness_step=abc") < 0);
+	CHECK(line(&c, "brightness_min=20") == 0 && c.brightness_min == 20);
+	CHECK(line(&c, "dedup_ms = 150") == 0 && c.dedup_ms == 150);
+	CHECK(line(&c, "repeat_ms = 2001") < 0 && c.repeat_ms == 80);
+
+	CHECK(line(&c, "volume_step = 1.5") == 0 && c.volume_step == 150);
+	CHECK(line(&c, "volume_step = -3") < 0);
+	CHECK(volume_step_for(&c, -6525, 0) == 150);
+	CHECK(line(&c, "volume_step = 1%") == 0 && c.volume_step_pct == 1);
+	CHECK(volume_step_for(&c, -6525, 0) == 65);
+	CHECK(line(&c, "volume_step = 0%") < 0);
+	CHECK(line(&c, "volume_step = 51%") < 0 &&
+	      line(&c, "volume_step = %") < 0);
+	CHECK(c.volume_step_pct == 1);
+	CHECK(line(&c, "volume_step = 2") == 0 && c.volume_step_pct == 0);
+	CHECK(volume_step_for(&c, -6525, 0) == 200);
+	CHECK(line(&c, "volume_max_db=-6") == 0 && c.volume_max == -600);
+
+	CHECK(line(&c, "card = hw:1") == 0 && strcmp(c.card, "hw:1") == 0);
+	CHECK(line(&c, "volume_control = Speaker") == 0);
+	CHECK(strcmp(c.volume_control, "Speaker") == 0);
+	CHECK(line(&c, "backlight=intel_backlight") == 0);
+	CHECK(strcmp(c.backlight, "intel_backlight") == 0);
+	/* only a plain name under /sys/class/backlight */
+	CHECK(line(&c, "backlight=/tmp/bl") < 0 &&
+	      line(&c, "backlight=..") < 0);
+	CHECK(line(&c, "backlight=../leds") < 0 && line(&c, "backlight=") < 0);
+	CHECK(strcmp(c.backlight, "intel_backlight") == 0);
+
+	CHECK(line(&c, "mute_controls = A Switch , B Switch,") == 0);
+	CHECK(c.n_mute == 2 && strcmp(c.mute_controls[0], "A Switch") == 0);
+	CHECK(strcmp(c.mute_controls[1], "B Switch") == 0);
+	CHECK(line(&c, "mute_controls =") == 0 && c.n_mute == 0);
+	CHECK(line(&c, "state_file = relative") < 0);
+	CHECK(line(&c, "state_file =") == 0 && c.state_file[0] == '\0');
+
+	CHECK(conf_line(&c, "unknown = 1", err, sizeof(err)) < 0);
+	CHECK(strstr(err, "unknown key") != NULL);
+	CHECK(conf_line(&c, "no equals sign", err, sizeof(err)) < 0);
+	CHECK(strstr(err, "missing") != NULL);
+}
+
 static void test_names(void)
 {
 	CHECK(hotkey_by_name("KEY_VOLUMEUP") == HK_VOLUME_UP);
@@ -108,6 +173,7 @@ int main(void)
 	test_brightness();
 	test_percent();
 	test_volume();
+	test_conf();
 	test_names();
 	test_dedup();
 	if (failures) {
