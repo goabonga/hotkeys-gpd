@@ -6,6 +6,7 @@ CFLAGS  ?= -O2
 CFLAGS  += -std=c11 -Wall -Wextra -Wpedantic -Werror -Iinclude
 CPPFLAGS += -D_GNU_SOURCE
 PREFIX  ?= /usr/local
+SANITIZE ?= address,undefined
 BUILD   := build
 
 .PHONY: all test clean install
@@ -20,11 +21,12 @@ $(BUILD):
 
 # Unit tests of the pure logic, built with the address and undefined
 # behaviour sanitizers.
+# Disable them with `make test SANITIZE=` where the platform rejects them.
 test: $(BUILD)/test_logic
 	$(BUILD)/test_logic
 
 $(BUILD)/test_logic: tests/test_logic.c src/logic.c include/logic.h | $(BUILD)
-	$(CC) $(CPPFLAGS) $(CFLAGS) -g -fsanitize=address,undefined -fno-sanitize-recover=all \
+	$(CC) $(CPPFLAGS) $(CFLAGS) -g $(if $(SANITIZE),-fsanitize=$(SANITIZE) -fno-sanitize-recover=all) \
 		$(LDFLAGS) -o $@ tests/test_logic.c src/logic.c -lm
 
 install: all
