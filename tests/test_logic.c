@@ -4,6 +4,7 @@
 #include "logic.h"
 
 #include <stdio.h>
+#include <string.h>
 
 static int failures;
 
@@ -63,11 +64,52 @@ static void test_volume(void)
 	CHECK(volume_next(-6400, 200, -6525, 0, false) == -6525);
 }
 
+static void test_names(void)
+{
+	CHECK(hotkey_by_name("KEY_VOLUMEUP") == HK_VOLUME_UP);
+	CHECK(hotkey_by_name("key_brightnessdown") == HK_BRIGHTNESS_DOWN);
+	CHECK(hotkey_by_name("mute") == HK_MUTE);
+	CHECK(hotkey_by_name("KEY_FOO") == -1);
+	CHECK(strcmp(hotkey_names[HK_MUTE], "KEY_MUTE") == 0);
+}
+
+static void test_dedup(void)
+{
+	struct dedup d;
+
+	/* device 1 is the Consumer Control, device 2 the Video Bus */
+	memset(&d, 0, sizeof(d));
+	CHECK(dedup_accept(&d, HK_BRIGHTNESS_UP, 1, 1, 1000, 100, 80));
+	/* duplicate from another device, then releases */
+	CHECK(!dedup_accept(&d, HK_BRIGHTNESS_UP, 2, 1, 1020, 100, 80));
+	CHECK(!dedup_accept(&d, HK_BRIGHTNESS_UP, 1, 0, 1030, 100, 80));
+	CHECK(!dedup_accept(&d, HK_BRIGHTNESS_UP, 2, 0, 1040, 100, 80));
+	/* window elapsed, then same device */
+	CHECK(dedup_accept(&d, HK_BRIGHTNESS_UP, 2, 1, 1200, 100, 80));
+	CHECK(dedup_accept(&d, HK_BRIGHTNESS_UP, 2, 1, 1210, 100, 80));
+	/* autorepeat: too fast, then at the repeat rate */
+	CHECK(!dedup_accept(&d, HK_BRIGHTNESS_UP, 2, 2, 1250, 100, 80));
+	CHECK(dedup_accept(&d, HK_BRIGHTNESS_UP, 2, 2, 1300, 100, 80));
+	/* repeat from a device that did not press */
+	CHECK(!dedup_accept(&d, HK_BRIGHTNESS_UP, 1, 2, 1500, 100, 80));
+	/* keys are independent */
+	CHECK(dedup_accept(&d, HK_BRIGHTNESS_DOWN, 2, 1, 1305, 100, 80));
+	/* mute never repeats */
+	CHECK(dedup_accept(&d, HK_MUTE, 1, 1, 2000, 100, 80));
+	CHECK(!dedup_accept(&d, HK_MUTE, 1, 2, 2500, 100, 80));
+	CHECK(!dedup_accept(&d, HK_MUTE, 3, 1, 2050, 100, 80));
+	/* repeat without a press */
+	CHECK(!dedup_accept(&d, HK_VOLUME_UP, 1, 2, 3000, 100, 80));
+	CHECK(!dedup_accept(&d, HK_COUNT, 1, 1, 3000, 100, 80));
+}
+
 int main(void)
 {
 	test_brightness();
 	test_percent();
 	test_volume();
+	test_names();
+	test_dedup();
 	if (failures) {
 		fprintf(stderr, "%d check(s) failed\n", failures);
 		return 1;

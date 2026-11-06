@@ -3,6 +3,8 @@
 
 #include "logic.h"
 
+#include <strings.h>
+
 int brightness_next(int cur, int max, int pct, int min, bool up)
 {
 	int step;
@@ -50,4 +52,43 @@ long volume_next(long cur, long step, long min, long max, bool up)
 	if (v < min)
 		return min;
 	return v > max ? max : v;
+}
+
+const char *const hotkey_names[HK_COUNT] = {
+    "KEY_BRIGHTNESSUP", "KEY_BRIGHTNESSDOWN", "KEY_VOLUMEUP",
+    "KEY_VOLUMEDOWN",	"KEY_MUTE",
+};
+
+int hotkey_by_name(const char *name)
+{
+	for (int i = 0; i < HK_COUNT; i++)
+		if (strcasecmp(name, hotkey_names[i]) == 0 ||
+		    strcasecmp(name, hotkey_names[i] + 4) == 0)
+			return i;
+	return -1;
+}
+
+bool dedup_accept(struct dedup *d, enum hotkey k, int dev, int value,
+		  long now_ms, int dedup_ms, int repeat_ms)
+{
+	if ((int)k < 0 || k >= HK_COUNT)
+		return false;
+	if (value == 1) {
+		/* same key from another device right after: duplicate */
+		if (d->t[k].seen && d->t[k].dev != dev &&
+		    now_ms - d->t[k].press_ms < dedup_ms)
+			return false;
+		d->t[k].seen = true;
+		d->t[k].dev = dev;
+		d->t[k].press_ms = now_ms;
+		d->t[k].action_ms = now_ms;
+		return true;
+	}
+	if (value == 2 && k != HK_MUTE && d->t[k].seen && d->t[k].dev == dev &&
+	    now_ms - d->t[k].action_ms >= repeat_ms) {
+		d->t[k].action_ms = now_ms;
+		return true;
+	}
+	/* release, repeat too fast, from another device, or mute */
+	return false;
 }
