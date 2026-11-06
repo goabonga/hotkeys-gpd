@@ -113,6 +113,21 @@ printf 'volume_step = 99%%\n' >"$T/conf-badpct"
 check_out "invalid volume_step reported" 'volume_step: invalid value' \
 	"$BIN" -n -c "$T/conf-badpct" -t KEY_VOLUMEUP
 
+# listening: the daemon starts, publishes the state and stops on SIGTERM
+if [ -d /dev/input ]; then
+	rm -f "$T/run/state"
+	"$BIN" -c "$T/conf-state" -b "$T/bl" >/dev/null 2>&1 &
+	pid=$!
+	sleep 1
+	kill -0 "$pid" 2>/dev/null && ok=$((ok + 1)) || {
+		failed=$((failed + 1))
+		echo "FAIL: daemon running"
+	}
+	kill -TERM "$pid" 2>/dev/null
+	wait "$pid"
+	check "daemon exits 0 on SIGTERM" test $? -eq 0
+fi
+
 # errors
 check "relative --backlight-dir refused" sh -c "! '$BIN' -n -b bl -t KEY_BRIGHTNESSUP"
 printf 'backlight = %s\n' "$T/bl" >"$T/conf-abs"

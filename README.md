@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 `gpd-hotkeysd`: hotkeys of the GPD Pocket without a desktop environment.
-It needs `alsa-lib` and `pkg-config` to build.
+It needs `libevdev`, `alsa-lib` and `pkg-config` to build.
 
 ## Build
 
@@ -16,6 +16,23 @@ make
 
 `make install` installs the binary under `$(PREFIX)/bin` (default
 `/usr/local`), honouring `DESTDIR`.
+
+## Listening to the keys
+
+Without `--test-event`, `gpd-hotkeysd` stays in the foreground and reads
+every `/dev/input/event*` advertising at least one of the handled keys,
+detected by capabilities rather than by number:
+
+- devices are opened read-only and never grabbed (no `EVIOCGRAB`, no
+  `uinput`): the console and the compositor still receive every key;
+- devices appearing or disappearing are followed through inotify on
+  `/dev/input`;
+- the same key reported by another device less than `dedup_ms` (100 ms)
+  later is ignored (Consumer Control, Video Bus and Intel HID report one
+  press); a held key repeats every `repeat_ms` (80 ms), never for mute;
+- when an `acpi_video*` backlight exists, the `Video Bus` device is ignored
+  because the kernel already handles it;
+- `SIGHUP` reloads the configuration, `SIGTERM` and `SIGINT` stop the daemon.
 
 ## Brightness
 
@@ -74,7 +91,7 @@ another file with `-c`): `backlight`, `brightness_step` (1 to 50, in %),
 `brightness_min` (raw floor), `card`, `volume_control`, `mute_controls`
 (comma-separated, empty to use the switch of the volume control),
 `volume_step` (dB, or a percentage of the range such as `1%`),
-`volume_max_db`, `state_file`. An unknown key, an invalid value or a line
+`volume_max_db`, `dedup_ms`, `repeat_ms`, `state_file`. An unknown key, an invalid value or a line
 longer than 511 bytes is reported and ignored: the default is kept.
 
 ## Tests

@@ -9,8 +9,8 @@ SANITIZE ?= address,undefined
 SOURCES := $(wildcard src/*.c include/*.h tests/*.c)
 BUILD   := build
 
-CPPFLAGS += -D_GNU_SOURCE $(shell pkg-config --cflags alsa)
-LDLIBS  += $(shell pkg-config --libs alsa) -lm
+CPPFLAGS += -D_GNU_SOURCE $(shell pkg-config --cflags libevdev alsa)
+LDLIBS  += $(shell pkg-config --libs libevdev alsa) -lm
 OBJS    := $(BUILD)/gpd-hotkeysd.o $(BUILD)/logic.o
 SAN     := $(if $(SANITIZE),-fsanitize=$(SANITIZE) -fno-sanitize-recover=all)
 

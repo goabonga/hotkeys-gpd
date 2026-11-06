@@ -4,7 +4,8 @@
 /*
  * gpd-hotkeysd: GPD Pocket hotkeys, without a desktop environment.
  * Writes /sys/class/backlight/<x>/brightness and drives the ALSA mixer of the
- * chtrt5645 card.
+ * chtrt5645 card. Reads evdev devices WITHOUT grabbing them (no EVIOCGRAB): the
+ * console and the compositor still receive every key.
  */
 
 #include "logic.h"
@@ -15,16 +16,24 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
+#include <libevdev/libevdev.h>
 #include <limits.h>
+#include <poll.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/inotify.h>
+#include <sys/signalfd.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #define CONF_DEFAULT "/etc/gpd-hotkeysd.conf"
 #define DIR_BL "/sys/class/backlight"
+#define DIR_INPUT "/dev/input"
+#define MAX_DEV 32
 
 static struct conf conf;
 static const char *conf_path = CONF_DEFAULT;
@@ -34,6 +43,8 @@ static bool conf_explicit;
 static bool verbose;
 static bool dry;
 static bool journal;
+/* an acpi_video backlight exists: the kernel handles "Video Bus" keys */
+static bool ignore_video_bus;
 /* current values in % (-1: unknown), exposed through the state file */
 static struct {
 	int brightness;
@@ -64,6 +75,14 @@ __attribute__((format(printf, 2, 3))) static void msg(int level,
 #define WARN(...) msg(4, __VA_ARGS__)
 #define INFO(...) msg(6, __VA_ARGS__)
 #define DBG(...) msg(7, __VA_ARGS__)
+
+static long now_ms(void)
+{
+	struct timespec t;
+
+	clock_gettime(CLOCK_MONOTONIC, &t);
+	return t.tv_sec * 1000L + t.tv_nsec / 1000000L;
+}
 
 /* ---------- configuration ---------- */
 
@@ -229,6 +248,21 @@ static int find_backlight(char *out, size_t len)
 	}
 	closedir(d);
 	return best < 3 ? 0 : -1;
+}
+
+/* An acpi_video* is present: the kernel already changes the brightness. */
+static bool acpi_video_present(void)
+{
+	struct dirent *e;
+	bool found = false;
+	DIR *d = opendir(DIR_BL);
+
+	if (!d)
+		return false;
+	for (e = readdir(d); e; e = readdir(d))
+		found = found || !strncmp(e->d_name, "acpi_video", 10);
+	closedir(d);
+	return found;
 }
 
 static int brightness(bool up, bool read_only)
@@ -543,15 +577,305 @@ static int action(enum hotkey k)
 	return r;
 }
 
+/* ---------- evdev devices ---------- */
+
+static const unsigned int codes[HK_COUNT] = {
+    KEY_BRIGHTNESSUP, KEY_BRIGHTNESSDOWN, KEY_VOLUMEUP,
+    KEY_VOLUMEDOWN,   KEY_MUTE,
+};
+
+static struct dev {
+	int fd;
+	int id;
+	struct libevdev *ev;
+	char name[32]; /* eventN */
+} devs[MAX_DEV];
+static int ndev;
+static int next_id;
+static struct dedup dedup;
+
+/* Hardware-supplied name: no control characters in the log. */
+static const char *safe_name(const struct libevdev *ev, char *b, size_t n)
+{
+	const char *s = libevdev_get_name(ev) ? libevdev_get_name(ev) : "?";
+	size_t i;
+
+	for (i = 0; s[i] && i + 1 < n; i++)
+		b[i] = (unsigned char)s[i] < 0x20 || s[i] == 0x7f ? '?' : s[i];
+	b[i] = '\0';
+	return b;
+}
+
+static void dev_add(const char *name)
+{
+	char p[PATH_MAX];
+	char n[64];
+	struct libevdev *ev;
+	bool useful = false;
+	int fd;
+	int r;
+
+	if (strncmp(name, "event", 5) != 0 ||
+	    strlen(name) >= sizeof(devs[0].name))
+		return;
+	for (int i = 0; i < ndev; i++)
+		if (!strcmp(devs[i].name, name))
+			return;
+	if (ndev == MAX_DEV) {
+		WARN("too many devices, %s ignored", name);
+		return;
+	}
+	snprintf(p, sizeof(p), DIR_INPUT "/%s", name);
+	/* read-only, never EVIOCGRAB */
+	fd = open(p, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+	if (fd < 0) {
+		/* EACCES: udev is not done yet, retried on IN_ATTRIB */
+		DBG("%s: %s", p, strerror(errno));
+		return;
+	}
+	r = libevdev_new_from_fd(fd, &ev);
+	if (r < 0) {
+		DBG("%s: %s", p, strerror(-r));
+		close(fd);
+		return;
+	}
+	for (int k = 0; k < HK_COUNT; k++)
+		useful =
+		    useful || libevdev_has_event_code(ev, EV_KEY, codes[k]);
+	safe_name(ev, n, sizeof(n));
+	if (useful && ignore_video_bus && !strcmp(n, "Video Bus")) {
+		INFO("%s (%s) ignored: acpi_video already handles brightness",
+		     n, name);
+		useful = false;
+	}
+	if (!useful) {
+		libevdev_free(ev);
+		close(fd);
+		return;
+	}
+	devs[ndev] = (struct dev){.fd = fd, .id = next_id++, .ev = ev};
+	snprintf(devs[ndev++].name, sizeof(devs[0].name), "%s", name);
+	INFO("added %s (%s)", n, name);
+}
+
+static void dev_remove(int i)
+{
+	char n[64];
+
+	INFO("removed %s (%s)", safe_name(devs[i].ev, n, sizeof(n)),
+	     devs[i].name);
+	libevdev_free(devs[i].ev);
+	close(devs[i].fd);
+	devs[i] = devs[--ndev];
+}
+
+static void dev_scan(void)
+{
+	struct dirent *e;
+	DIR *d = opendir(DIR_INPUT);
+
+	if (!d) {
+		ERR(DIR_INPUT ": %s", strerror(errno));
+		return;
+	}
+	for (e = readdir(d); e; e = readdir(d))
+		dev_add(e->d_name);
+	closedir(d);
+}
+
+static void dev_key(int i, const struct input_event *e)
+{
+	for (int k = 0; k < HK_COUNT; k++) {
+		if (e->code != codes[k])
+			continue;
+		DBG("%s: %s value %d", devs[i].name, hotkey_names[k], e->value);
+		if (dedup_accept(&dedup, (enum hotkey)k, devs[i].id, e->value,
+				 now_ms(), conf.dedup_ms, conf.repeat_ms))
+			action((enum hotkey)k);
+	}
+}
+
+/* Reads all pending events; the device is removed if it went away. */
+static void dev_read(int i)
+{
+	struct input_event e;
+	unsigned int flag = LIBEVDEV_READ_FLAG_NORMAL;
+	int r;
+
+	for (;;) {
+		r = libevdev_next_event(devs[i].ev, flag, &e);
+		if (flag == LIBEVDEV_READ_FLAG_SYNC) {
+			if (r == LIBEVDEV_READ_STATUS_SYNC)
+				continue; /* resync: take no action */
+			if (r == -EAGAIN) {
+				flag = LIBEVDEV_READ_FLAG_NORMAL;
+				continue;
+			}
+		} else if (r == LIBEVDEV_READ_STATUS_SYNC) {
+			DBG("%s: SYN_DROPPED, resyncing", devs[i].name);
+			flag = LIBEVDEV_READ_FLAG_SYNC;
+			continue;
+		}
+		if (r == -EAGAIN)
+			return;
+		if (r < 0) {
+			if (r != -ENODEV)
+				ERR("%s: %s", devs[i].name, strerror(-r));
+			dev_remove(i);
+			return;
+		}
+		if (e.type == EV_KEY)
+			dev_key(i, &e);
+	}
+}
+
+static void inotify_read(int ino)
+{
+	char buf[4096]
+	    __attribute__((aligned(__alignof__(struct inotify_event))));
+	ssize_t n;
+
+	for (n = read(ino, buf, sizeof(buf)); n > 0;
+	     n = read(ino, buf, sizeof(buf))) {
+		for (char *p = buf; p < buf + n;) {
+			const struct inotify_event *ev =
+			    (const struct inotify_event *)p;
+
+			p += sizeof(*ev) + ev->len;
+			if (ev->mask & IN_Q_OVERFLOW) {
+				dev_scan();
+				continue;
+			}
+			if (!ev->len)
+				continue;
+			if (!(ev->mask & IN_DELETE)) {
+				/* IN_CREATE, or IN_ATTRIB: udev set the mode */
+				dev_add(ev->name);
+				continue;
+			}
+			for (int i = 0; i < ndev; i++)
+				if (!strcmp(devs[i].name, ev->name)) {
+					dev_remove(i);
+					break;
+				}
+		}
+	}
+}
+
+/* ---------- main loop ---------- */
+
+/* Returns true when the daemon must stop. */
+static bool signals_read(int sfd)
+{
+	struct signalfd_siginfo si;
+	bool done = false;
+
+	while (read(sfd, &si, sizeof(si)) == (ssize_t)sizeof(si)) {
+		struct conf c;
+
+		if (si.ssi_signo != SIGHUP) {
+			done = true;
+		} else if (!load_conf(&c)) {
+			conf = c;
+			INFO("configuration reloaded");
+		}
+	}
+	return done;
+}
+
+static int run(void)
+{
+	struct pollfd pfd[MAX_DEV + 2];
+	sigset_t set;
+	int sfd;
+	int ino;
+	bool done = false;
+
+	sigemptyset(&set);
+	sigaddset(&set, SIGTERM);
+	sigaddset(&set, SIGINT);
+	sigaddset(&set, SIGHUP);
+	sfd = sigprocmask(SIG_BLOCK, &set, NULL)
+		  ? -1
+		  : signalfd(-1, &set, SFD_CLOEXEC | SFD_NONBLOCK);
+	if (sfd < 0) {
+		ERR("signalfd: %s", strerror(errno));
+		return 1;
+	}
+	ino = inotify_init1(IN_CLOEXEC | IN_NONBLOCK);
+	if (ino < 0 ||
+	    inotify_add_watch(ino, DIR_INPUT,
+			      IN_CREATE | IN_ATTRIB | IN_DELETE) < 0) {
+		ERR("inotify " DIR_INPUT ": %s", strerror(errno));
+		close(sfd);
+		return 1;
+	}
+	ignore_video_bus = acpi_video_present();
+	INFO("gpd-hotkeysd " HOTKEYS_VERSION "%s", dry ? " (dry-run)" : "");
+	dev_scan();
+	if (!ndev)
+		WARN(
+		    "no device with the handled keys (permissions on " DIR_INPUT
+		    "?); waiting");
+	brightness(false, true);
+	sound_read_state();
+	write_state();
+
+	while (!done) {
+		int n = 2;
+
+		pfd[0] = (struct pollfd){.fd = sfd, .events = POLLIN};
+		pfd[1] = (struct pollfd){.fd = ino, .events = POLLIN};
+		for (int i = 0; i < ndev; i++)
+			pfd[n++] =
+			    (struct pollfd){.fd = devs[i].fd, .events = POLLIN};
+		if (poll(pfd, (nfds_t)n, -1) < 0) {
+			if (errno == EINTR)
+				continue;
+			ERR("poll: %s", strerror(errno));
+			break;
+		}
+		if (pfd[0].revents & POLLIN)
+			done = signals_read(sfd);
+		/*
+		 * Devices BEFORE inotify: this loop only closes descriptors,
+		 * so no number is reused by a new device before its revents
+		 * have been read.
+		 */
+		for (int j = 2; j < n; j++) {
+			if (!pfd[j].revents)
+				continue;
+			for (int i = 0; i < ndev; i++) {
+				if (devs[i].fd != pfd[j].fd)
+					continue;
+				if (pfd[j].revents & POLLIN)
+					dev_read(i);
+				else
+					dev_remove(i); /* HUP, ERR, NVAL */
+				break;
+			}
+		}
+		if (pfd[1].revents & POLLIN)
+			inotify_read(ino); /* new devices join on next turn */
+	}
+	INFO("stopping");
+	while (ndev)
+		dev_remove(ndev - 1);
+	close(ino);
+	close(sfd);
+	return done ? 0 : 1;
+}
+
 static void usage(FILE *f)
 {
 	fputs("usage: gpd-hotkeysd [-c file] [-v] [-n] [-b dir] "
-	      "--test-event KEY_NAME\n"
+	      "[--test-event KEY_NAME]\n"
 	      "  -c, --config F       configuration file (default " CONF_DEFAULT
 	      ")\n"
 	      "  -v, --verbose        detailed log\n"
 	      "  -n, --dry-run        show actions without applying them\n"
-	      "  -t, --test-event K   simulate a key press and exit: "
+	      "  -t, --test-event K   simulate a key press and exit "
+	      "(without it, listen to the keyboards): "
 	      "KEY_BRIGHTNESSUP,\n"
 	      "                       KEY_BRIGHTNESSDOWN, KEY_VOLUMEUP, "
 	      "KEY_VOLUMEDOWN, KEY_MUTE\n"
@@ -607,7 +931,7 @@ int main(int argc, char **argv)
 			return 2;
 		}
 	}
-	if (optind < argc || !test) {
+	if (optind < argc) {
 		usage(stderr);
 		return 2;
 	}
@@ -619,6 +943,8 @@ int main(int argc, char **argv)
 	snd_lib_error_set_handler(alsa_error);
 	if (load_conf(&conf))
 		return 1;
+	if (!test)
+		return run();
 	k = hotkey_by_name(test);
 	if (k < 0) {
 		ERR("unknown key \"%s\"", test);
