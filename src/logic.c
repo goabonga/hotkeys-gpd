@@ -42,3 +42,12 @@ int percent(long v, long min, long max)
 		return 100;
 	return (int)(((v - min) * 100 + (max - min) / 2) / (max - min));
 }
+
+long volume_next(long cur, long step, long min, long max, bool up)
+{
+	long v = up ? cur + step : cur - step;
+
+	if (v < min)
+		return min;
+	return v > max ? max : v;
+}

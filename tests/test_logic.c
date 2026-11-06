@@ -54,10 +54,20 @@ static void test_percent(void)
 	CHECK(percent(500, 0, 100) == 100);
 }
 
+static void test_volume(void)
+{
+	/* 1/100 dB on a [-6525, 0] range */
+	CHECK(volume_next(-900, 200, -6525, 0, true) == -700);
+	CHECK(volume_next(-900, 200, -6525, 0, false) == -1100);
+	CHECK(volume_next(-100, 200, -6525, 0, true) == 0);
+	CHECK(volume_next(-6400, 200, -6525, 0, false) == -6525);
+}
+
 int main(void)
 {
 	test_brightness();
 	test_percent();
+	test_volume();
 	if (failures) {
 		fprintf(stderr, "%d check(s) failed\n", failures);
 		return 1;

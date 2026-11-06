@@ -19,4 +19,7 @@ int brightness_next(int cur, int max, int pct, int min, bool up);
 /* Rounded percentage of v within [min, max]; 100 when the range is empty. */
 int percent(long v, long min, long max);
 
+/* New volume (1/100 dB) after one step, clamped to [min, max]. */
+long volume_next(long cur, long step, long min, long max, bool up);
+
 #endif /* LOGIC_H */
