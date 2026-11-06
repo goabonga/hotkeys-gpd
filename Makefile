@@ -4,31 +4,39 @@
 CC      ?= cc
 CFLAGS  ?= -O2
 CFLAGS  += -std=c11 -Wall -Wextra -Wpedantic -Werror -Iinclude
-CPPFLAGS += -D_GNU_SOURCE
 PREFIX  ?= /usr/local
 SANITIZE ?= address,undefined
 SOURCES := $(wildcard src/*.c include/*.h tests/*.c)
 BUILD   := build
 
+CPPFLAGS += -D_GNU_SOURCE
+OBJS    := $(BUILD)/gpd-hotkeysd.o $(BUILD)/logic.o
+SAN     := $(if $(SANITIZE),-fsanitize=$(SANITIZE) -fno-sanitize-recover=all)
+
 .PHONY: all test format format-check lint clean install
 
 all: $(BUILD)/gpd-hotkeysd
 
-$(BUILD)/gpd-hotkeysd: src/gpd-hotkeysd.c include/version.h | $(BUILD)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ src/gpd-hotkeysd.c
+$(BUILD)/gpd-hotkeysd: $(OBJS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
+
+$(BUILD)/%.o: src/%.c include/logic.h include/version.h | $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
 
 $(BUILD):
 	mkdir -p $@
 
-# Unit tests of the pure logic, built with the address and undefined
-# behaviour sanitizers.
-# Disable them with `make test SANITIZE=` where the platform rejects them.
-test: $(BUILD)/test_logic
+# Unit tests, built with the address and undefined behaviour sanitizers,
+# then the daemon tests on a fake backlight.
+# Disable the sanitizers with `make test SANITIZE=` where the platform
+# rejects them.
+test: $(BUILD)/test_logic $(BUILD)/gpd-hotkeysd
 	$(BUILD)/test_logic
+	tests/tests.sh $(BUILD)/gpd-hotkeysd
 
 $(BUILD)/test_logic: tests/test_logic.c src/logic.c include/logic.h | $(BUILD)
-	$(CC) $(CPPFLAGS) $(CFLAGS) -g $(if $(SANITIZE),-fsanitize=$(SANITIZE) -fno-sanitize-recover=all) \
-		$(LDFLAGS) -o $@ tests/test_logic.c src/logic.c -lm
+	$(CC) $(CPPFLAGS) $(CFLAGS) -g $(SAN) $(LDFLAGS) -o $@ \
+		tests/test_logic.c src/logic.c -lm
 
 format:
 	clang-format -i $(SOURCES)
