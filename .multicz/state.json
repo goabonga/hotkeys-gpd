@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "git_head": "bb5b241a71b36f1a47172833cb2949b2e1203c34",
+  "git_head_short": "bb5b241",
+  "timestamp": "2026-11-06T18:26:22Z",
+  "components": {
+    "hotkeys-gpd": {
+      "version": "0.1.0",
+      "tag": "v0.1.0",
+      "tag_sha": null
+    }
+  }
+}
