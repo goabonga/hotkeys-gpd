@@ -9,7 +9,8 @@ SANITIZE ?= address,undefined
 SOURCES := $(wildcard src/*.c include/*.h tests/*.c)
 BUILD   := build
 
-CPPFLAGS += -D_GNU_SOURCE
+CPPFLAGS += -D_GNU_SOURCE $(shell pkg-config --cflags alsa)
+LDLIBS  += $(shell pkg-config --libs alsa) -lm
 OBJS    := $(BUILD)/gpd-hotkeysd.o $(BUILD)/logic.o
 SAN     := $(if $(SANITIZE),-fsanitize=$(SANITIZE) -fno-sanitize-recover=all)
 
@@ -18,7 +19,7 @@ SAN     := $(if $(SANITIZE),-fsanitize=$(SANITIZE) -fno-sanitize-recover=all)
 all: $(BUILD)/gpd-hotkeysd
 
 $(BUILD)/gpd-hotkeysd: $(OBJS)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lm
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 $(BUILD)/%.o: src/%.c include/logic.h include/version.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<

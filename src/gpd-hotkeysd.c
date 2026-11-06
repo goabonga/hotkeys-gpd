@@ -3,12 +3,14 @@
 
 /*
  * gpd-hotkeysd: GPD Pocket hotkeys, without a desktop environment.
- * Writes /sys/class/backlight/<x>/brightness.
+ * Writes /sys/class/backlight/<x>/brightness and drives the ALSA mixer of the
+ * chtrt5645 card.
  */
 
 #include "logic.h"
 #include "version.h"
 
+#include <alsa/asoundlib.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -230,12 +232,243 @@ static int brightness(bool up)
 	return 0;
 }
 
+/* ---------- sound (ALSA) ---------- */
+
+struct sound {
+	snd_mixer_t *m;
+	snd_hctl_t *h;
+	snd_mixer_elem_t *vol;
+};
+
+static void sound_close(struct sound *s)
+{
+	if (s->m)
+		snd_mixer_close(s->m);
+	memset(s, 0, sizeof(*s));
+}
+
+/* alsa-lib internal messages: verbose mode only */
+__attribute__((format(printf, 5, 6))) static void
+alsa_error(const char *file, int line, const char *fn, int err, const char *fmt,
+	   ...)
+{
+	char b[256];
+	va_list ap;
+
+	va_start(ap, fmt);
+	vsnprintf(b, sizeof(b), fmt, ap);
+	va_end(ap);
+	DBG("alsa-lib %s:%d (%s): %s%s%s", file, line, fn, b, err ? ": " : "",
+	    err ? snd_strerror(err) : "");
+}
+
+/* Opens the mixer on every action: the card may appear after the daemon. */
+static int sound_open(struct sound *s, bool quiet)
+{
+	const char *const names[] = {conf.volume_control, "Master", "PCM"};
+	char dev[CONF_STR + 8];
+	int r;
+
+	memset(s, 0, sizeof(*s));
+	if (strchr(conf.card, ':'))
+		snprintf(dev, sizeof(dev), "%s", conf.card);
+	else
+		snprintf(dev, sizeof(dev), "hw:%s", conf.card);
+	r = snd_mixer_open(&s->m, 0);
+	if (r >= 0)
+		r = snd_mixer_attach(s->m, dev);
+	if (r >= 0)
+		r = snd_mixer_selem_register(s->m, NULL, NULL);
+	if (r >= 0)
+		r = snd_mixer_load(s->m);
+	if (r < 0) {
+		if (quiet)
+			DBG("card %s: %s", dev, snd_strerror(r));
+		else
+			ERR("card %s: %s", dev, snd_strerror(r));
+		sound_close(s);
+		return -1;
+	}
+	if (snd_mixer_get_hctl(s->m, dev, &s->h) < 0)
+		s->h = NULL;
+	for (size_t i = 0; i < sizeof(names) / sizeof(*names) && !s->vol; i++) {
+		snd_mixer_selem_id_t *id;
+		snd_mixer_elem_t *e;
+
+		snd_mixer_selem_id_alloca(&id);
+		snd_mixer_selem_id_set_name(id, names[i]);
+		e = snd_mixer_find_selem(s->m, id);
+		if (e && snd_mixer_selem_has_playback_volume(e)) {
+			s->vol = e;
+			if (i)
+				WARN("control \"%s\" missing: falling back "
+				     "to \"%s\"",
+				     conf.volume_control, names[i]);
+		}
+	}
+	return 0;
+}
+
+static snd_hctl_elem_t *ctl_by_name(struct sound *s, const char *name)
+{
+	snd_ctl_elem_id_t *id;
+
+	if (!s->h)
+		return NULL;
+	snd_ctl_elem_id_alloca(&id);
+	snd_ctl_elem_id_set_interface(id, SND_CTL_ELEM_IFACE_MIXER);
+	snd_ctl_elem_id_set_name(id, name);
+	return snd_hctl_find_elem(s->h, id);
+}
+
+/* 1 muted, 0 unmuted, -1 unknown: first mute switch, else the volume's. */
+static int mute_read(struct sound *s)
+{
+	snd_hctl_elem_t *e = NULL;
+	int on;
+
+	if (conf.n_mute)
+		e = ctl_by_name(s, conf.mute_controls[0]);
+	if (e) {
+		snd_ctl_elem_value_t *v;
+
+		snd_ctl_elem_value_alloca(&v);
+		if (snd_hctl_elem_read(e, v) < 0)
+			return -1;
+		return !snd_ctl_elem_value_get_boolean(v, 0);
+	}
+	if (s->vol && snd_mixer_selem_has_playback_switch(s->vol) &&
+	    snd_mixer_selem_get_playback_switch(
+		s->vol, SND_MIXER_SCHN_FRONT_LEFT, &on) >= 0)
+		return !on;
+	return -1;
+}
+
+static int mute_write(struct sound *s, bool muted)
+{
+	int ok = 0;
+	int r;
+
+	for (int i = 0; i < conf.n_mute; i++) {
+		snd_hctl_elem_t *e = ctl_by_name(s, conf.mute_controls[i]);
+		snd_ctl_elem_info_t *info;
+		snd_ctl_elem_value_t *v;
+
+		if (!e) {
+			WARN("control \"%s\" missing", conf.mute_controls[i]);
+			continue;
+		}
+		snd_ctl_elem_info_alloca(&info);
+		snd_ctl_elem_value_alloca(&v);
+		r = snd_hctl_elem_info(e, info);
+		if (r >= 0)
+			r = snd_hctl_elem_read(e, v);
+		if (r < 0) {
+			ERR("%s: %s", conf.mute_controls[i], snd_strerror(r));
+			continue;
+		}
+		for (unsigned int c = 0; c < snd_ctl_elem_info_get_count(info);
+		     c++)
+			snd_ctl_elem_value_set_boolean(v, c, !muted);
+		r = snd_hctl_elem_write(e, v);
+		if (r < 0)
+			ERR("%s: %s", conf.mute_controls[i], snd_strerror(r));
+		else
+			ok++;
+	}
+	if (!ok && s->vol && snd_mixer_selem_has_playback_switch(s->vol) &&
+	    snd_mixer_selem_set_playback_switch_all(s->vol, !muted) >= 0)
+		ok++;
+	return ok ? 0 : -1;
+}
+
+static int toggle_mute(struct sound *s)
+{
+	int m = mute_read(s);
+
+	if (m < 0) {
+		ERR("mute: no usable switch");
+		return -1;
+	}
+	if (dry) {
+		INFO("[dry-run] mute: %s -> %s", m ? "muted" : "unmuted",
+		     m ? "unmuted" : "muted");
+		return 0;
+	}
+	if (mute_write(s, !m))
+		return -1;
+	DBG("mute: %s", m ? "unmuted" : "muted");
+	return 0;
+}
+
+static int change_volume(struct sound *s, bool up)
+{
+	long cur;
+	long min;
+	long max;
+	long ceiling;
+	long v;
+	int m = mute_read(s);
+	int r;
+
+	if (!s->vol) {
+		ERR("volume: no usable control (\"%s\", Master, PCM)",
+		    conf.volume_control);
+		return -1;
+	}
+	r = snd_mixer_selem_get_playback_dB_range(s->vol, &min, &max);
+	if (r >= 0)
+		r = snd_mixer_selem_get_playback_dB(
+		    s->vol, SND_MIXER_SCHN_FRONT_LEFT, &cur);
+	if (r < 0) {
+		ERR("volume: reading dB: %s", snd_strerror(r));
+		return -1;
+	}
+	ceiling = max < conf.volume_max ? max : conf.volume_max;
+	v = volume_next(cur, volume_step_for(&conf, min, ceiling), min, ceiling,
+			up);
+	if (dry) {
+		INFO("[dry-run] volume %.2f -> %.2f dB%s", (double)cur / 100.0,
+		     (double)v / 100.0, up && m == 1 ? " (+ unmute)" : "");
+		return 0;
+	}
+	/* volume up unmutes first */
+	if (up && m == 1)
+		mute_write(s, false);
+	r = snd_mixer_selem_set_playback_dB_all(s->vol, v,
+						up && v < ceiling ? 1 : -1);
+	if (r < 0) {
+		ERR("volume: %s", snd_strerror(r));
+		return -1;
+	}
+	DBG("volume %.2f -> %.2f dB", (double)cur / 100.0, (double)v / 100.0);
+	return 0;
+}
+
+static int sound(enum hotkey k)
+{
+	struct sound s;
+	int r;
+
+	if (sound_open(&s, dry)) {
+		if (dry) {
+			INFO("[dry-run] %s: card \"%s\" unavailable, no action",
+			     hotkey_names[k], conf.card);
+			return 0;
+		}
+		return -1;
+	}
+	r = k == HK_MUTE ? toggle_mute(&s)
+			 : change_volume(&s, k == HK_VOLUME_UP);
+	sound_close(&s);
+	return r;
+}
+
 static int action(enum hotkey k)
 {
 	if (k == HK_BRIGHTNESS_UP || k == HK_BRIGHTNESS_DOWN)
 		return brightness(k == HK_BRIGHTNESS_UP);
-	ERR("%s: not handled", hotkey_names[k]);
-	return -1;
+	return sound(k);
 }
 
 static void usage(FILE *f)
@@ -248,7 +481,8 @@ static void usage(FILE *f)
 	      "  -n, --dry-run        show actions without applying them\n"
 	      "  -t, --test-event K   simulate a key press and exit: "
 	      "KEY_BRIGHTNESSUP,\n"
-	      "                       KEY_BRIGHTNESSDOWN\n"
+	      "                       KEY_BRIGHTNESSDOWN, KEY_VOLUMEUP, "
+	      "KEY_VOLUMEDOWN, KEY_MUTE\n"
 	      "  -b, --backlight-dir D\n"
 	      "                       fake backlight (tests; absolute, refused "
 	      "as root)\n"
@@ -310,6 +544,7 @@ int main(int argc, char **argv)
 		return 2;
 	}
 	journal = getenv("JOURNAL_STREAM") != NULL;
+	snd_lib_error_set_handler(alsa_error);
 	if (load_conf(&conf))
 		return 1;
 	k = hotkey_by_name(test);

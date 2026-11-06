@@ -83,6 +83,18 @@ check_out "long line reported" 'line too long' \
 check_out "rest of a long line ignored" 'brightness 50 -> 55' \
 	"$BIN" -n -c "$T/conf-long" -b "$T/bl" -t KEY_BRIGHTNESSUP
 
+# sound keys: the test card does not exist
+printf 'card = missing-card-test\n' >"$T/conf-nocard"
+for k in KEY_VOLUMEUP KEY_VOLUMEDOWN KEY_MUTE; do
+	check "dry-run $k without card" "$BIN" -n -c "$T/conf-nocard" -t $k
+	check_out "dry-run $k reports the card" 'card "missing-card-test" unavailable' \
+		"$BIN" -n -c "$T/conf-nocard" -t $k
+	check "$k without card fails" sh -c "! '$BIN' -c '$T/conf-nocard' -t $k"
+done
+printf 'volume_step = 99%%\n' >"$T/conf-badpct"
+check_out "invalid volume_step reported" 'volume_step: invalid value' \
+	"$BIN" -n -c "$T/conf-badpct" -t KEY_VOLUMEUP
+
 # errors
 check "relative --backlight-dir refused" sh -c "! '$BIN' -n -b bl -t KEY_BRIGHTNESSUP"
 printf 'backlight = %s\n' "$T/bl" >"$T/conf-abs"

@@ -11,8 +11,8 @@ its terms.
 
 ## Development setup
 
-You need a C11 compiler (gcc or clang), `make`, `clang-format` and
-`clang-tidy`.
+You need a C11 compiler (gcc or clang), `make`, `pkg-config`, the `alsa-lib`
+headers, `clang-format` and `clang-tidy`.
 
 ```bash
 git clone https://github.com/goabonga/hotkeys-gpd.git
