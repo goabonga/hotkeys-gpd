@@ -7,9 +7,10 @@ CFLAGS  += -std=c11 -Wall -Wextra -Wpedantic -Werror -Iinclude
 CPPFLAGS += -D_GNU_SOURCE
 PREFIX  ?= /usr/local
 SANITIZE ?= address,undefined
+SOURCES := $(wildcard src/*.c include/*.h tests/*.c)
 BUILD   := build
 
-.PHONY: all test clean install
+.PHONY: all test format format-check lint clean install
 
 all: $(BUILD)/gpd-hotkeysd
 
@@ -28,6 +29,15 @@ test: $(BUILD)/test_logic
 $(BUILD)/test_logic: tests/test_logic.c src/logic.c include/logic.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -g $(if $(SANITIZE),-fsanitize=$(SANITIZE) -fno-sanitize-recover=all) \
 		$(LDFLAGS) -o $@ tests/test_logic.c src/logic.c -lm
+
+format:
+	clang-format -i $(SOURCES)
+
+format-check:
+	clang-format --dry-run -Werror $(SOURCES)
+
+lint:
+	clang-tidy --quiet $(filter %.c,$(SOURCES)) -- $(CPPFLAGS) -std=c11 -Iinclude
 
 install: all
 	install -Dm755 $(BUILD)/gpd-hotkeysd $(DESTDIR)$(PREFIX)/bin/gpd-hotkeysd
