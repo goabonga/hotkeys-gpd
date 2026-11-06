@@ -19,9 +19,9 @@ static void usage(FILE *f)
 int main(int argc, char **argv)
 {
 	static const struct option opts[] = {
-		{ "help", no_argument, NULL, 'h' },
-		{ "version", no_argument, NULL, 'V' },
-		{ NULL, 0, NULL, 0 },
+	    {"help", no_argument, NULL, 'h'},
+	    {"version", no_argument, NULL, 'V'},
+	    {NULL, 0, NULL, 0},
 	};
 	int o;
 
