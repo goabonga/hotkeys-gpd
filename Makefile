@@ -8,7 +8,7 @@ CPPFLAGS += -D_GNU_SOURCE
 PREFIX  ?= /usr/local
 BUILD   := build
 
-.PHONY: all clean install
+.PHONY: all test clean install
 
 all: $(BUILD)/gpd-hotkeysd
 
@@ -17,6 +17,14 @@ $(BUILD)/gpd-hotkeysd: src/gpd-hotkeysd.c include/version.h | $(BUILD)
 
 $(BUILD):
 	mkdir -p $@
+
+# Unit tests of the pure logic.
+test: $(BUILD)/test_logic
+	$(BUILD)/test_logic
+
+$(BUILD)/test_logic: tests/test_logic.c src/logic.c include/logic.h | $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -g $(LDFLAGS) -o $@ \
+		tests/test_logic.c src/logic.c -lm
 
 install: all
 	install -Dm755 $(BUILD)/gpd-hotkeysd $(DESTDIR)$(PREFIX)/bin/gpd-hotkeysd
