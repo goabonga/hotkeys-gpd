@@ -47,7 +47,7 @@ version bump and CHANGELOG computed by
 | `refactor`, `docs`, `test`, `chore`, `ci`, `build`, `style` | none | maintenance |
 | `feat!` / `BREAKING CHANGE:` | major | incompatible change |
 
-Only commits that touch the tracked paths (`src/**`, `include/**`,
+Only commits that touch the tracked paths (`src/**`, `include/**`, `data/**`,
 `Makefile`) trigger a release. Do not append `Co-Authored-By` trailers.
 Commits must be signed: add the `resign` label to a pull request to have
 its commits re-signed.

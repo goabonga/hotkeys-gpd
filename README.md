@@ -14,8 +14,32 @@ make
 ./build/gpd-hotkeysd --version
 ```
 
-`make install` installs the binary under `$(PREFIX)/bin` (default
-`/usr/local`), honouring `DESTDIR`.
+`make install` honours `DESTDIR` and installs, under `$(PREFIX)` (default
+`/usr/local`):
+
+- `bin/gpd-hotkeysd`;
+- `lib/systemd/system/gpd-hotkeysd.service`;
+- `lib/udev/rules.d/90-gpd-hotkeys.rules`;
+
+and `$(SYSCONFDIR)/gpd-hotkeysd.conf` (default `/etc`), a commented example
+with the default values.
+
+## Service
+
+The unit runs the daemon without root: `DynamicUser=yes` with the groups
+`input` (read `/dev/input`), `audio` (`/dev/snd`) and `video`, and a
+restrictive systemd sandbox. The udev rule makes
+`/sys/class/backlight/*/brightness` writable by the `video` group; apply it
+without rebooting:
+
+```bash
+sudo udevadm control --reload
+sudo udevadm trigger -s backlight -c add
+sudo systemctl enable --now gpd-hotkeysd
+```
+
+Reload the configuration with `sudo systemctl reload gpd-hotkeysd`.
+Installing does not enable anything.
 
 ## Listening to the keys
 

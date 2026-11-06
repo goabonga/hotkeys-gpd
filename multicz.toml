@@ -35,7 +35,7 @@ types = ["perf"]
 # Curated: only what is compiled counts toward a release. Docs, tests, CI
 # and tooling are intentionally untracked; a release-relevant change in an
 # untracked file is invisible.
-paths = ["src/**", "include/**", "Makefile"]
+paths = ["src/**", "include/**", "data/**", "Makefile"]
 bump_files = [
     { file = "include/version.h", key = "regex:HOTKEYS_VERSION\\s+\"([^\"]+)\"" },
 ]

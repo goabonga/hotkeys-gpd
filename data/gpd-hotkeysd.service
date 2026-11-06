@@ -1,0 +1,56 @@
+[Unit]
+Description=GPD Pocket hotkeys (brightness, volume, mute)
+Documentation=file:///usr/share/doc/hotkeys-gpd/README.md
+After=alsa-restore.service pocket-mixer-state.service systemd-backlight@backlight:intel_backlight.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/gpd-hotkeysd
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=2
+
+# Not root: dynamic user. input = read /dev/input, audio = /dev/snd,
+# video = <backlight>/brightness (made g+w by /usr/lib/udev/rules.d/90-gpd-hotkeys.rules).
+DynamicUser=yes
+SupplementaryGroups=input audio video
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=yes
+RuntimeDirectory=gpd-hotkeysd
+RuntimeDirectoryMode=0755
+UMask=0077
+
+# Everything read-only except /run/gpd-hotkeysd. /sys stays writable at mount level
+# (the /sys/class/backlight/<x> link leads into /sys/devices/...), but for a non-root uid
+# only files owned by the video group are writable: DAC permissions do the confinement.
+ProtectSystem=strict
+ProtectKernelTunables=no
+ProtectHome=yes
+PrivateTmp=yes
+PrivateIPC=yes
+RemoveIPC=yes
+ProtectProc=invisible
+DevicePolicy=closed
+DeviceAllow=char-input r
+DeviceAllow=char-alsa rw
+
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

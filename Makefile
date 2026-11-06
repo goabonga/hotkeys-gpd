@@ -5,6 +5,7 @@ CC      ?= cc
 CFLAGS  ?= -O2
 CFLAGS  += -std=c11 -Wall -Wextra -Wpedantic -Werror -Iinclude
 PREFIX  ?= /usr/local
+SYSCONFDIR ?= /etc
 SANITIZE ?= address,undefined
 SOURCES := $(wildcard src/*.c include/*.h tests/*.c)
 BUILD   := build
@@ -50,6 +51,11 @@ lint:
 
 install: all
 	install -Dm755 $(BUILD)/gpd-hotkeysd $(DESTDIR)$(PREFIX)/bin/gpd-hotkeysd
+	install -Dm644 data/gpd-hotkeysd.service \
+		$(DESTDIR)$(PREFIX)/lib/systemd/system/gpd-hotkeysd.service
+	install -Dm644 data/gpd-hotkeysd.conf $(DESTDIR)$(SYSCONFDIR)/gpd-hotkeysd.conf
+	install -Dm644 data/90-gpd-hotkeys.rules \
+		$(DESTDIR)$(PREFIX)/lib/udev/rules.d/90-gpd-hotkeys.rules
 
 clean:
 	rm -rf $(BUILD)
